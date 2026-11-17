@@ -649,6 +649,36 @@ extern "C" commandResult_t IR_Enable(const void *context, const char *cmd, const
 
 // test routine to start IR RX and TX
 // currently fixed pins for testing.
+// [GevaudanBeast] IRSendRaw [kHz] m1,s1,m2,s2,... (microseconds)
+extern "C" commandResult_t IR_SendRaw_Cmd(const void *context, const char *cmd, const char *args_in, int cmdFlags) {
+    if (!args_in || !*args_in) return CMD_RES_NOT_ENOUGH_ARGUMENTS;
+    static uint16_t rawbufsend[200];
+    int n = 0;
+    int khz = 38;
+    const char *p = args_in;
+    char *e;
+    while (*p == ' ') p++;
+    long first = strtol(p, &e, 10);
+    if (e != p && *e == ' ') {
+        khz = (int)first;
+        p = e + 1;
+    }
+    while (*p && n < 200) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!*p) break;
+        long v = strtol(p, &e, 10);
+        if (e == p) break;
+        if (v > 0 && v < 65535) rawbufsend[n++] = (uint16_t)v;
+        p = e;
+    }
+    if (n < 2 || !pIRsend) return CMD_RES_BAD_ARGUMENT;
+    IrSender.SetParent(pIRsend);
+    pIRsend->sendRaw(rawbufsend, (uint_fast16_t)n, (uint_fast8_t)khz);
+    pIRsend->delay(100);
+    ADDLOG_INFO(LOG_FEATURE_IR, (char *)"IR send raw %d timings at %d kHz", n, khz);
+    return CMD_RES_OK;
+}
+
 extern "C" void DRV_IR_Init(){
 	ADDLOG_INFO(LOG_FEATURE_IR, (char *)"Log from extern C CPP");
 
@@ -722,6 +752,11 @@ extern "C" void DRV_IR_Init(){
 	//cmddetail:"fn":"IR_Enable","file":"driver/drv_ir.cpp","requires":"ENABLE_DRIVER_IR (Arduino-IRremote)",
 	//cmddetail:"examples":""}
             CMD_RegisterCommand("IREnable", IR_Enable, NULL);
+	//cmddetail:{"name":"IRSendRaw","args":"[kHz] m1,s1,m2,s2,...",
+	//cmddetail:"descr":"Sends raw IR timings in microseconds (mark,space,...), default 38 kHz",
+	//cmddetail:"fn":"IR_SendRaw_Cmd","file":"driver/drv_ir.cpp","requires":"ENABLE_DRIVER_IR",
+	//cmddetail:"examples":"IRSendRaw 38 1250,400,400,1250"}
+            CMD_RegisterCommand("IRSendRaw", IR_SendRaw_Cmd, NULL);
         }
     }
     if ((pin > 0) || (txpin > 0)){
@@ -838,6 +873,22 @@ extern "C" void DRV_IR_RunFrame(){
 
 				char out[128];
 				PrintIRData(&ourReceiver->decodedIRData);
+				// [GevaudanBeast] raw timings dump for unknown protocols
+				if (ourReceiver->decodedIRData.protocol == UNKNOWN) {
+					char raw[400];
+					int pos = 0;
+					pos += snprintf(raw + pos, sizeof(raw) - pos, "IR_RAW %d:", (int)ourReceiver->decodedIRData.rawDataPtr->rawlen - 1);
+					for (int ri = 1; ri < (int)ourReceiver->decodedIRData.rawDataPtr->rawlen && pos < (int)sizeof(raw) - 8; ri++) {
+						pos += snprintf(raw + pos, sizeof(raw) - pos, "%s%u", (ri == 1) ? "" : ",",
+							(unsigned)(ourReceiver->decodedIRData.rawDataPtr->rawbuf[ri] * MICROS_PER_TICK));
+					}
+					ADDLOG_INFO(LOG_FEATURE_IR, (char *)"%s", raw);
+#if ENABLE_MQTT
+					if (CFG_HasFlag(OBK_FLAG_IR_PUBLISH_RECEIVED)) {
+						MQTT_PublishMain_StringString("ir_raw", raw, 0);
+					}
+#endif
+				}
 				ADDLOG_DEBUG(LOG_FEATURE_IR, (char *)"IR decode returned true, protocol %s (%d)", name, (int)ourReceiver->decodedIRData.protocol);
                 int repeat = 0;
                 if (ourReceiver->decodedIRData.flags & (IRDATA_FLAGS_IS_AUTO_REPEAT | IRDATA_FLAGS_IS_REPEAT)) {
